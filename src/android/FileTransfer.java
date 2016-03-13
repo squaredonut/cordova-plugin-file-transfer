@@ -65,11 +65,18 @@ import android.net.Uri;
 import android.os.Build;
 import android.util.Log;
 import android.webkit.CookieManager;
+import android.Manifest;
+import android.app.Activity;
+import android.support.v4.app.ActivityCompat;
+import android.support.v4.content.ContextCompat;
+
+import android.content.pm.PackageManager;
 
 public class FileTransfer extends CordovaPlugin {
 
     private static final String LOG_TAG = "FileTransfer";
     private static final String LINE_START = "--";
+
     private static final String LINE_END = "\r\n";
     private static final String BOUNDARY =  "+++++";
 
@@ -78,9 +85,15 @@ public class FileTransfer extends CordovaPlugin {
     public static int CONNECTION_ERR = 3;
     public static int ABORTED_ERR = 4;
     public static int NOT_MODIFIED_ERR = 5;
+    public static int STORAGE_PERMISSION_REQUIRED_ERR = 6;
+
+    public static final int PERMISSIONS_REQUEST_WRITE_EXTERNAL = 1;
 
     private static HashMap<String, RequestContext> activeRequests = new HashMap<String, RequestContext>();
     private static final int MAX_BUFFER_SIZE = 16 * 1024;
+
+    private RequestContext pendingDownloadRequest;
+    private JSONArray pendingDownloadArgs;
 
     private static final class RequestContext {
         String source;
@@ -109,20 +122,20 @@ public class FileTransfer extends CordovaPlugin {
      * the HTTP Content-Length header value from the server.
      */
     private static abstract class TrackingInputStream extends FilterInputStream {
-      public TrackingInputStream(final InputStream in) {
-        super(in);
-      }
+        public TrackingInputStream(final InputStream in) {
+            super(in);
+        }
         public abstract long getTotalRawBytesRead();
-  }
+    }
 
     private static class ExposedGZIPInputStream extends GZIPInputStream {
-      public ExposedGZIPInputStream(final InputStream in) throws IOException {
-        super(in);
-      }
-      public Inflater getInflater() {
-        return inf;
-      }
-  }
+        public ExposedGZIPInputStream(final InputStream in) throws IOException {
+            super(in);
+        }
+        public Inflater getInflater() {
+            return inf;
+        }
+    }
 
     /**
      * Provides raw bytes-read tracking for a GZIP input stream. Reports the
@@ -130,15 +143,15 @@ public class FileTransfer extends CordovaPlugin {
      * number of uncompressed bytes.
      */
     private static class TrackingGZIPInputStream extends TrackingInputStream {
-      private ExposedGZIPInputStream gzin;
-      public TrackingGZIPInputStream(final ExposedGZIPInputStream gzin) throws IOException {
-        super(gzin);
-        this.gzin = gzin;
-      }
-      public long getTotalRawBytesRead() {
-        return gzin.getInflater().getBytesRead();
-      }
-  }
+        private ExposedGZIPInputStream gzin;
+        public TrackingGZIPInputStream(final ExposedGZIPInputStream gzin) throws IOException {
+            super(gzin);
+            this.gzin = gzin;
+        }
+        public long getTotalRawBytesRead() {
+            return gzin.getInflater().getBytesRead();
+        }
+    }
 
     /**
      * Provides simple total-bytes-read tracking for an existing InputStream
@@ -150,10 +163,10 @@ public class FileTransfer extends CordovaPlugin {
         }
 
         private int updateBytesRead(int newBytesRead) {
-          if (newBytesRead != -1) {
-            bytesRead += newBytesRead;
-          }
-          return newBytesRead;
+            if (newBytesRead != -1) {
+                bytesRead += newBytesRead;
+            }
+            return newBytesRead;
         }
 
         @Override
@@ -169,7 +182,7 @@ public class FileTransfer extends CordovaPlugin {
         }
 
         public long getTotalRawBytesRead() {
-          return bytesRead;
+            return bytesRead;
         }
     }
 
@@ -231,7 +244,7 @@ public class FileTransfer extends CordovaPlugin {
                 }
             }
         } catch (JSONException e1) {
-          // No headers to be manipulated!
+            // No headers to be manipulated!
         }
     }
 
@@ -245,9 +258,9 @@ public class FileTransfer extends CordovaPlugin {
             Method gcMethod  = iccmClass.getMethod("getCookie", String.class);
 
             cookie = (String)gcMethod.invoke(
-                        iccmClass.cast(
+                    iccmClass.cast(
                             gcmMethod.invoke(webView)
-                        ), target);
+                    ), target);
 
             gotCookie = true;
         } catch (NoSuchMethodException e) {
@@ -308,7 +321,7 @@ public class FileTransfer extends CordovaPlugin {
         // Accept a path or a URI for the source.
         Uri tmpSrc = Uri.parse(source);
         final Uri sourceUri = resourceApi.remapUri(
-            tmpSrc.getScheme() != null ? tmpSrc : Uri.fromFile(new File(source)));
+                tmpSrc.getScheme() != null ? tmpSrc : Uri.fromFile(new File(source)));
 
         int uriType = CordovaResourceApi.getUriType(targetUri);
         final boolean useHttps = uriType == CordovaResourceApi.URI_TYPE_HTTPS;
@@ -392,11 +405,11 @@ public class FileTransfer extends CordovaPlugin {
                             Object key = iter.next();
                             if(!String.valueOf(key).equals("headers"))
                             {
-                              beforeData.append(LINE_START).append(BOUNDARY).append(LINE_END);
-                              beforeData.append("Content-Disposition: form-data; name=\"").append(key.toString()).append('"');
-                              beforeData.append(LINE_END).append(LINE_END);
-                              beforeData.append(params.getString(key.toString()));
-                              beforeData.append(LINE_END);
+                                beforeData.append(LINE_START).append(BOUNDARY).append(LINE_END);
+                                beforeData.append("Content-Disposition: form-data; name=\"").append(key.toString()).append('"');
+                                beforeData.append(LINE_END).append(LINE_END);
+                                beforeData.append(params.getString(key.toString()));
+                                beforeData.append(LINE_END);
                             }
                         }
                     } catch (JSONException e) {
@@ -585,7 +598,7 @@ public class FileTransfer extends CordovaPlugin {
     private static TrackingInputStream getInputStream(URLConnection conn) throws IOException {
         String encoding = conn.getContentEncoding();
         if (encoding != null && encoding.equalsIgnoreCase("gzip")) {
-          return new TrackingGZIPInputStream(new ExposedGZIPInputStream(conn.getInputStream()));
+            return new TrackingGZIPInputStream(new ExposedGZIPInputStream(conn.getInputStream()));
         }
         return new SimpleTrackingInputStream(conn.getInputStream());
     }
@@ -603,11 +616,11 @@ public class FileTransfer extends CordovaPlugin {
         }
 
         public void checkClientTrusted(X509Certificate[] chain,
-                String authType) throws CertificateException {
+                                       String authType) throws CertificateException {
         }
 
         public void checkServerTrusted(X509Certificate[] chain,
-                String authType) throws CertificateException {
+                                       String authType) throws CertificateException {
         }
     } };
 
@@ -662,7 +675,7 @@ public class FileTransfer extends CordovaPlugin {
                         }
                     }
                 }
-            // IOException can leave connection object in a bad state, so catch all exceptions.
+                // IOException can leave connection object in a bad state, so catch all exceptions.
             } catch (Throwable e) {
                 Log.w(LOG_TAG, "Error getting HTTP status code from connection.", e);
             }
@@ -671,11 +684,11 @@ public class FileTransfer extends CordovaPlugin {
         return createFileTransferError(errorCode, source, target, body, httpStatus, throwable);
     }
 
-        /**
-        * Create an error object based on the passed in errorCode
-        * @param errorCode      the error
-        * @return JSONObject containing the error
-        */
+    /**
+     * Create an error object based on the passed in errorCode
+     * @param errorCode      the error
+     * @return JSONObject containing the error
+     */
     private static JSONObject createFileTransferError(int errorCode, String source, String target, String body, Integer httpStatus, Throwable throwable) {
         JSONObject error = null;
         try {
@@ -686,7 +699,7 @@ public class FileTransfer extends CordovaPlugin {
             if(body != null)
             {
                 error.put("body", body);
-            }   
+            }
             if (httpStatus != null) {
                 error.put("http_status", httpStatus);
             }
@@ -721,6 +734,29 @@ public class FileTransfer extends CordovaPlugin {
         return arg;
     }
 
+    public void onRequestPermissionResult(int requestCode, String permissions[], int[] grantResults) throws JSONException {
+        switch (requestCode) {
+            case PERMISSIONS_REQUEST_WRITE_EXTERNAL: {
+                // If request is cancelled, the result arrays are empty.
+                if (grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+                    if(pendingDownloadRequest != null){
+                        download(pendingDownloadRequest.source, pendingDownloadRequest.target, pendingDownloadArgs, pendingDownloadRequest.callbackContext);
+                    }
+                } else {
+                    if(pendingDownloadRequest != null){
+                        PluginResult result = new PluginResult(PluginResult.Status.ERROR, createFileTransferError(CONNECTION_ERR, pendingDownloadRequest.source, pendingDownloadRequest.target, null, null));
+                        pendingDownloadRequest.callbackContext.sendPluginResult(result);
+                    }
+                    // permission denied, boo! Disable the
+                    // functionality that depends on this permission.
+                }
+                pendingDownloadRequest = null;
+                pendingDownloadArgs = null;
+                return;
+            }
+        }
+    }
+
     /**
      * Downloads a file form a given URL and saves it to the specified directory.
      *
@@ -737,10 +773,28 @@ public class FileTransfer extends CordovaPlugin {
         final JSONObject headers = args.optJSONObject(4);
 
         final Uri sourceUri = resourceApi.remapUri(Uri.parse(source));
+
+        final Activity activity = cordova.getActivity();
+        final RequestContext context = new RequestContext(source, target, callbackContext);
+
+        if (ContextCompat.checkSelfPermission(activity, Manifest.permission.WRITE_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED) {
+            if(ActivityCompat.shouldShowRequestPermissionRationale(activity, Manifest.permission.WRITE_EXTERNAL_STORAGE)){
+                PluginResult result = new PluginResult(PluginResult.Status.ERROR, createFileTransferError(STORAGE_PERMISSION_REQUIRED_ERR, source, target, null, null));
+                callbackContext.sendPluginResult(result);
+            }
+            else{
+                pendingDownloadArgs = args;
+                pendingDownloadRequest = context;
+                cordova.requestPermission(this, PERMISSIONS_REQUEST_WRITE_EXTERNAL, Manifest.permission.WRITE_EXTERNAL_STORAGE);
+            }
+            return;
+        }
+
+
         // Accept a path or a URI for the source.
         Uri tmpTarget = Uri.parse(target);
         final Uri targetUri = resourceApi.remapUri(
-            tmpTarget.getScheme() != null ? tmpTarget : Uri.fromFile(new File(target)));
+                tmpTarget.getScheme() != null ? tmpTarget : Uri.fromFile(new File(target)));
 
         int uriType = CordovaResourceApi.getUriType(sourceUri);
         final boolean useHttps = uriType == CordovaResourceApi.URI_TYPE_HTTPS;
@@ -790,8 +844,6 @@ public class FileTransfer extends CordovaPlugin {
             return;
         }
 
-
-        final RequestContext context = new RequestContext(source, target, callbackContext);
         synchronized (activeRequests) {
             activeRequests.put(objectId, context);
         }
